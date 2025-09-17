@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>雙向語音翻譯 MVP</title>
+  <style>
+    body { margin:0; font-family: system-ui, sans-serif; background:#0b0f14; color:#e6e8ea; }
+    .wrap { display:flex; flex-direction:column; height:100vh; }
+    .pane { flex:1; padding:16px; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:12px; }
+    .pane.top { border-bottom:1px solid #1f2937; transform: rotate(180deg); } /* 給對面看 */
+    .bubble { width:100%; max-width:720px; min-height:96px; background:#111827; border:1px solid #1f2937; border-radius:16px; padding:16px; line-height:1.5; font-size:18px; }
+    .row { display:flex; gap:12px; align-items:center; justify-content:center; padding:12px; border-top:1px solid #1f2937; background:#0b0f14; }
+    button { appearance:none; border:none; border-radius:999px; padding:12px 18px; font-size:16px; background:#10b981; color:#041015; font-weight:700; }
+    button.stop { background:#ef4444; color:white; }
+    .pill { padding:6px 10px; border-radius:999px; font-size:12px; background:#111827; border:1px solid #1f2937; }
+    .lang { display:flex; gap:8px; align-items:center; }
+    select { background:#111827; color:#e6e8ea; border:1px solid #1f2937; border-radius:8px; padding:6px; }
+    .status-dot { width:10px; height:10px; border-radius:50%; background:#6b7280; display:inline-block; }
+    .status-dot.on { background:#10b981; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="pane top">
+    <div class="bubble" id="topText">（對方可讀區：顯示你講中文→翻譯成英/日）</div>
+  </div>
+  <div class="pane bottom">
+    <div class="bubble" id="bottomText">（你可讀區：顯示對方英/日→翻譯成中文）</div>
+  </div>
+  <div class="row">
+    <span class="pill"><span class="status-dot" id="dot"></span> <span id="status">Idle</span></span>
+    <button id="toggle">啟動</button>
+    <div class="lang">
+      目標語：
+      <select id="target">
+        <option value="en">英文 (en)</option>
+        <option value="ja">日文 (ja)</option>
+      </select>
+    </div>
+    <div class="lang">
+      輸出語音：
+      <select id="voice">
+        <option value="auto">自動選擇</option>
+      </select>
+    </div>
+  </div>
+</div>
+
+<script>
+const topEl = document.getElementById('topText');
+const bottomEl = document.getElementById('bottomText');
+const btn = document.getElementById('toggle');
+const dot = document.getElementById('dot');
+const statusEl = document.getElementById('status');
+const targetSel = document.getElementById('target');
+const voiceSel = document.getElementById('voice');
+
+let recog;
+let running = false;
+let speaking = false;
+
+// ——— 語言判斷（粗但實用）———
+function detectLang(text) {
+  const hasKana = /[\u3040-\u309F\u30A0-\u30FF]/.test(text); // 日文假名
+  const cjk = text.match(/[\u4E00-\u9FFF]/g)?.length ?? 0;   // 中日漢字
+  const latin = text.match(/[A-Za-z]/g)?.length ?? 0;
+
+  if (hasKana) return 'ja';
+  if (cjk > latin * 1.2) return 'zh';
+  if (latin > 0) return 'en';
+  // fallback：看標點或空白比例
+  return 'unknown';
+}
+
+// ——— 簡易 TTS（瀏覽器）———
+function speak(text, lang) {
+  const u = new SpeechSynthesisUtterance(text);
+  // 嘗試選一個對應語系的 voice
+  const voices = speechSynthesis.getVoices();
+  let v;
+  if (voiceSel.value !== 'auto') {
+    v = voices.find(x => x.name === voiceSel.value);
+  }
+  if (!v) {
+    v = voices.find(x => x.lang?.toLowerCase().startsWith(lang)) ||
+        voices.find(x => x.lang?.toLowerCase().startsWith(lang.split('-')[0])) ||
+        voices[0];
+  }
+  if (v) u.voice = v;
+  u.lang = v?.lang || (lang === 'zh' ? 'zh-TW' : lang);
+  speaking = true;
+  u.onend = () => speaking = false;
+  speechSynthesis.speak(u);
+}
+
+// ——— 你要換成實際的翻譯 API 呼叫 ——
+// 這裡給一個範例結構：用 OpenAI/DeepL 之類皆可。
+// 回傳純文字翻譯結果。
+async function translate(text, targetLang) {
+  // TODO: 改成你的翻譯服務。
+  // 下面是一個示意：使用 OpenAI Responses（伺服器代理最佳，避免把金鑰放前端）。
+  // return await fetch("/api/translate", { method:"POST", headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text, targetLang }) })
+  //   .then(r => r.json()).then(d => d.translation);
+
+  // 先暫時直接回傳（為了讓畫面流程可測）
+  return `[${targetLang}] ${text}`;
+}
+
+// ——— 啟動/停止錄音辨識 ———
+function startRecog() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    alert('此瀏覽器不支援 Web Speech API（建議 Android Chrome 測試）。');
+    return;
+  }
+  recog = new SR();
+  recog.continuous = true;
+  recog.interimResults = true;
+  // 不強制設語言，讓它聽各種語（也可設 zh-TW，更穩抓中文）
+  // recog.lang = 'zh-TW';
+
+  recog.onresult = async (e) => {
+    // 取最後一句 final
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const res = e.results[i];
+      if (!res.isFinal) continue;
+      const text = res[0].transcript.trim();
+
+      // 若此時正在 TTS，避免把 TTS 播放的聲音當成輸入（很粗的保護）
+      if (speaking) continue;
+
+      const lang = detectLang(text);
+      // console.log('heard:', text, lang);
+
+      if (lang === 'zh') {
+        // 你說中文 → 翻譯成目標語，丟上格
+        const tgt = targetSel.value; // 'en' or 'ja'
+        const out = await translate(text, tgt);
+        topEl.textContent = out;
+        // 說給對面聽
+        speak(out, tgt);
+      } else if (lang === 'en' || lang === 'ja') {
+        // 對方說英/日 → 翻成中文，丟下格
+        const out = await translate(text, 'zh');
+        bottomEl.textContent = out;
+        // 說給你聽
+        speak(out, 'zh');
+      } else {
+        // 無法判斷就先顯示在下格
+        bottomEl.textContent = text;
+      }
+    }
+  };
+
+  recog.onerror = (e) => {
+    console.warn('recog error', e.error);
+  };
+  recog.onend = () => {
+    if (running) { // 連續模式，避免被系統中斷
+      try { recog.start(); } catch {}
+    }
+  };
+
+  try { recog.start(); } catch {}
+  running = true;
+  dot.classList.add('on');
+  statusEl.textContent = 'Listening…';
+  btn.textContent = '停止';
+  btn.classList.add('stop');
+}
+
+// 停止
+function stopRecog() {
+  running = false;
+  if (recog) { try { recog.stop(); } catch {} recog = null; }
+  speechSynthesis.cancel();
+  dot.classList.remove('on');
+  statusEl.textContent = 'Idle';
+  btn.textContent = '啟動';
+  btn.classList.remove('stop');
+}
+
+btn.addEventListener('click', () => {
+  if (!running) startRecog(); else stopRecog();
+});
+
+// 預載 TTS 聲音
+speechSynthesis.onvoiceschanged = () => {
+  const vs = speechSynthesis.getVoices();
+  voiceSel.innerHTML = '<option value="auto">自動選擇</option>' +
+    vs.map(v => `<option value="${v.name}">${v.name} (${v.lang})</option>`).join('');
+};
+</script>
+</body>
+</html>
