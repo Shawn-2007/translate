@@ -21,10 +21,9 @@
     .dot{width:10px;height:10px;border-radius:50%;background:var(--muted)}
     .dot.on{background:var(--ok)}
     main{display:flex;flex-direction:column;gap:0;flex:1}
-    .pane{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:16px;overflow-y:auto}
+    .pane{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px}
     .pane.top{border-bottom:1px solid var(--line);transform:rotate(180deg)}
-    .msg{width:100%;max-width:760px;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:12px 16px;margin:6px 0;font-size:16px;line-height:1.5}
-    .orig{font-size:14px;color:var(--muted);margin-top:4px}
+    .bubble{width:100%;max-width:760px;min-height:112px;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px;line-height:1.6;font-size:18px}
     .toolbar{display:flex;gap:12px;align-items:center;justify-content:center;border-top:1px solid var(--line);padding:12px;background:var(--bg)}
     select,input{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
     label{font-size:13px;color:var(--muted)}
@@ -53,8 +52,12 @@
   </header>
 
   <main>
-    <section class="pane top" id="topLog"></section>
-    <section class="pane" id="bottomLog"></section>
+    <section class="pane top">
+      <div class="bubble" id="topText">（對面可讀：你的中文 → 目標語翻譯）</div>
+    </section>
+    <section class="pane">
+      <div class="bubble" id="bottomText">（你可讀：對方英/日 → 中文翻譯）</div>
+    </section>
   </main>
 
   <div class="toolbar">
@@ -64,10 +67,6 @@
         <option value="en">英文 (en)</option>
         <option value="ja">日文 (ja)</option>
       </select>
-    </div>
-    <div class="row">
-      <label>輸出語音</label>
-      <select id="voice"><option value="auto">自動</option></select>
     </div>
   </div>
 </div>
@@ -92,7 +91,6 @@
             <option value="whisper-1">whisper-1</option>
             <option value="gpt-4o-mini-transcribe">gpt-4o-mini-transcribe</option>
           </select>
-          <div class="small">iOS Safari 無原生 SpeechRecognition，建議走雲端 ASR。</div>
         </div>
         <div class="grid">
           <label>翻譯模型</label>
@@ -100,22 +98,19 @@
             <option value="gpt-4o-mini">gpt-4o-mini</option>
             <option value="gpt-4o">gpt-4o</option>
           </select>
-          <div class="small">用這個模型把文字互翻（中⇄英/日）。</div>
         </div>
       </div>
       <div class="row2">
         <div class="grid">
           <label>音訊切片長度（秒）</label>
           <input id="chunkSec" type="number" min="2" max="10" value="4" />
-          <div class="small">每次錄音切片送去轉寫的時長。越短越即時但成本較高。</div>
         </div>
         <div class="grid">
-          <label>自動朗讀</label>
+          <label>自動朗讀（TTS）</label>
           <select id="autoTTS">
             <option value="on">開啟</option>
             <option value="off">關閉</option>
           </select>
-          <div class="small">用瀏覽器 SpeechSynthesis 播報翻譯。</div>
         </div>
       </div>
       <div class="row" style="justify-content:flex-end">
@@ -126,14 +121,12 @@
 </div>
 
 <script>
-const elTopLog=document.getElementById('topLog');
-const elBottomLog=document.getElementById('bottomLog');
+const elTop=document.getElementById('topText');
+const elBottom=document.getElementById('bottomText');
 const elTarget=document.getElementById('target');
-const elVoice=document.getElementById('voice');
 const elStart=document.getElementById('btnStart');
 const elDot=document.getElementById('dot');
 const elSt=document.getElementById('st');
-
 const mdl=document.getElementById('mdl');
 const btnSettings=document.getElementById('btnSettings');
 const btnClose=document.getElementById('btnClose');
@@ -144,7 +137,7 @@ const inMT=document.getElementById('mtModel');
 const inChunk=document.getElementById('chunkSec');
 const inAutoTTS=document.getElementById('autoTTS');
 
-let running=false,speaking=false,media,recorder,chunks=[],chunkTimer;
+let running=false;let media,recorder,chunks=[];let chunkTimer;
 
 const store={
   load(){const s=JSON.parse(localStorage.getItem('bx-translator')||'{}');inKey.value=s.key||'';inASR.value=s.asr||'whisper-1';inMT.value=s.mt||'gpt-4o-mini';inChunk.value=s.chunkSec||4;inAutoTTS.value=(s.autoTTS??'on');elTarget.value=s.target||'en';},
@@ -153,18 +146,13 @@ const store={
 };
 store.load();
 
-function speak(text,lang){const s=store.get();if((s.autoTTS||'on')!=='on')return;const u=new SpeechSynthesisUtterance(text);const voices=speechSynthesis.getVoices();let v;if(elVoice.value!=='auto')v=voices.find(x=>x.name===elVoice.value);if(!v){v=voices.find(x=>x.lang?.toLowerCase().startsWith(lang))||voices.find(x=>x.lang?.toLowerCase().startsWith(lang.split('-')[0]))||voices[0];}if(v)u.voice=v;u.lang=v?.lang||(lang==='zh'?'zh-TW':lang);speaking=true;u.onend=()=>speaking=false;speechSynthesis.cancel();speechSynthesis.speak(u);}
-speechSynthesis.onvoiceschanged=()=>{const vs=speechSynthesis.getVoices();elVoice.innerHTML='<option value="auto">自動</option>'+vs.map(v=>`<option value="${v.name}">${v.name} (${v.lang})</option>`).join('');};
-
 function detectLang(text){const hasKana=/[\u3040-\u309F\u30A0-\u30FF]/.test(text);const cjk=text.match(/[\u4E00-\u9FFF]/g)?.length??0;const latin=text.match(/[A-Za-z]/g)?.length??0;if(hasKana)return'ja';if(cjk>latin*1.2)return'zh';if(latin>0)return'en';return'unknown';}
 
-async function transcribe(blob){const s=store.get();if(!s.key)throw new Error('缺少 OpenAI API Key');const fd=new FormData();fd.append('file',blob,'chunk.webm');fd.append('model',s.asr||'whisper-1');const r=await fetch('https://api.openai.com/v1/audio/transcriptions',{method:'POST',headers:{'Authorization':`Bearer ${s.key}`},body:fd});if(!r.ok){throw new Error('ASR 失敗');}const j=await r.json();return j.text?.trim()||'';}
+async function transcribe(blob){const s=store.get();if(!s.key)throw new Error('缺少 API Key');const fd=new FormData();fd.append('file',blob,'chunk.webm');fd.append('model',s.asr||'whisper-1');const r=await fetch('https://api.openai.com/v1/audio/transcriptions',{method:'POST',headers:{'Authorization':`Bearer ${s.key}`},body:fd});if(!r.ok){throw new Error('ASR 失敗');}const j=await r.json();return j.text?.trim()||'';}
 
-async function translate(text,target){const s=store.get();if(!s.key)throw new Error('缺少 OpenAI API Key');const sys=`You are a translator. Translate the user's message into ${target==='zh'?'Traditional Chinese':target}. Output text only.`;const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${s.key}`},body:JSON.stringify({model:s.mt||'gpt-4o-mini',input:[{role:'system',content:sys},{role:'user',content:text}]})});if(!r.ok)throw new Error('翻譯失敗');const j=await r.json();return j.output?.[0]?.content?.[0]?.text||j.output_text||'';}
+async function translate(text,target){const s=store.get();if(!s.key)throw new Error('缺少 API Key');const sys=`Translate into ${target==='zh'?'Traditional Chinese':target}.`;const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${s.key}`},body:JSON.stringify({model:s.mt||'gpt-4o-mini',input:[{role:'system',content:sys},{role:'user',content:text}]})});if(!r.ok){throw new Error('翻譯失敗');}const j=await r.json();const out=j.output?.[0]?.content?.[0]?.text||j.output_text||'';return out.trim();}
 
-function appendMsg(logEl,trans,orig){const div=document.createElement('div');div.className='msg';div.innerHTML=`${trans}<div class="orig">${orig}</div>`;logEl.appendChild(div);logEl.scrollTop=logEl.scrollHeight;}
-
-async function start(){const s=store.get();if(!s.key){openSettings();alert('請先輸入 API Key');return;}try{media=await navigator.mediaDevices.getUserMedia({audio:true});}catch(err){alert('無法使用麥克風');return;}try{recorder=new MediaRecorder(media,{mimeType:'audio/webm'});}catch{recorder=new MediaRecorder(media);}chunks=[];recorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};recorder.onstop=async()=>{if(chunks.length===0)return;const blob=new Blob(chunks,{type:chunks[0].type||'audio/webm'});chunks=[];try{const text=await transcribe(blob);if(!text)return;if(speaking)return;const who=detectLang(text);const tgt=elTarget.value;if(who==='zh'){const out=await translate(text,tgt);appendMsg(elTopLog,out,text);speak(out,tgt);}else if(who==='en'||who==='ja'){const out=await translate(text,'zh');appendMsg(elBottomLog,out,text);speak(out,'zh');}else{appendMsg(elBottomLog,text,text);}}catch(err){console.warn(err);}if(running)safeStartSlice();};running=true;elStart.textContent='停止';elStart.classList.add('stop');elDot.classList.add('on');elSt.textContent='Listening…';safeStartSlice();}
+async function start(){const s=store.get();if(!s.key){openSettings();alert('請先輸入 API Key');return;}try{media=await navigator.mediaDevices.getUserMedia({audio:true});}catch(err){alert('無法使用麥克風');return;}try{recorder=new MediaRecorder(media,{mimeType:'audio/webm'});}catch{recorder=new MediaRecorder(media);}chunks=[];recorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};recorder.onstop=async()=>{if(chunks.length===0)return;const blob=new Blob(chunks,{type:chunks[0].type||'audio/webm'});chunks=[];try{const text=await transcribe(blob);if(!text)return;const who=detectLang(text);const tgt=elTarget.value;if(who==='zh'){const out=await translate(text,tgt);elTop.textContent=out;if(store.get().autoTTS==='on'){/*可選擇性 TTS*/}}else if(who==='en'||who==='ja'){const out=await translate(text,'zh');elBottom.textContent=out;if(store.get().autoTTS==='on'){/*可選擇性 TTS*/}}else{elBottom.textContent=text;}}catch(err){console.warn(err);}if(running)safeStartSlice();};running=true;elStart.textContent='停止';elStart.classList.add('stop');elDot.classList.add('on');elSt.textContent='Listening…';safeStartSlice();}
 
 function safeStartSlice(){const s=store.get();const sec=Math.max(2,Math.min(10,Number(s.chunkSec)||4));try{recorder.start();}catch{}clearTimeout(chunkTimer);chunkTimer=setTimeout(()=>{try{recorder.stop();}catch{}},sec*1000);}
 
