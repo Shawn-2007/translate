@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>雙向語音翻譯 MVP · iOS 版</title>
+  <title>雙向語音翻譯 MVP · iOS V1.1版</title>
   <style>
     :root{--bg:#0b0f14;--fg:#e6e8ea;--card:#111827;--muted:#6b7280;--line:#1f2937;--ok:#10b981;--bad:#ef4444;--btn:#10b981;--btn2:#374151}
     *{box-sizing:border-box}
@@ -38,7 +38,9 @@
     .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
     .danger{color:#fecaca}
     .small{font-size:12px;color:var(--muted)}
-  </style>
+  .log { width:100%; max-width:760px; height:100%; display:flex; flex-direction:column; gap:8px; overflow-y:auto; scroll-behavior:smooth }
+    .msg { }
+    </style>
 </head>
 <body>
 <div class="app">
@@ -53,10 +55,10 @@
 
   <main>
     <section class="pane top">
-      <div class="bubble" id="topText">（對面可讀：你的中文 → 目標語翻譯）</div>
+      <div class="log" id="topLog"></div>
     </section>
     <section class="pane">
-      <div class="bubble" id="bottomText">（你可讀：對方英/日 → 中文翻譯）</div>
+      <div class="log" id="bottomLog"></div>
     </section>
   </main>
 
@@ -123,8 +125,8 @@
 </div>
 
 <script>
-const elTop=document.getElementById('topText');
-const elBottom=document.getElementById('bottomText');
+const elTopLog=document.getElementById('topLog');
+const elBottomLog=document.getElementById('bottomLog');
 const elTarget=document.getElementById('target');
 const elStart=document.getElementById('btnStart');
 const elDot=document.getElementById('dot');
@@ -154,7 +156,15 @@ async function transcribe(blob){const s=store.get();if(!s.key)throw new Error('�
 
 async function translate(text,target){const s=store.get();if(!s.key)throw new Error('缺少 API Key');const sys=`Translate into ${target==='zh'?'Traditional Chinese':target}.`;const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${s.key}`},body:JSON.stringify({model:s.mt||'gpt-4o-mini',input:[{role:'system',content:sys},{role:'user',content:text}]})});if(!r.ok){throw new Error('翻譯失敗');}const j=await r.json();const out=j.output?.[0]?.content?.[0]?.text||j.output_text||'';return out.trim();}
 
-async function start(){const s=store.get();if(!s.key){openSettings();alert('請先輸入 API Key');return;}try{media=await navigator.mediaDevices.getUserMedia({audio:true});}catch(err){alert('無法使用麥克風');return;}try{recorder=new MediaRecorder(media,{mimeType:'audio/webm'});}catch{recorder=new MediaRecorder(media);}chunks=[];recorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};recorder.onstop=async()=>{if(chunks.length===0)return;const blob=new Blob(chunks,{type:chunks[0].type||'audio/webm'});chunks=[];try{const text=await transcribe(blob);if(!text)return;let who=detectLang(text);const tgt=elTarget.value;if(who==='zh'||who==='zh-en'||who==='zh-ja'){const out=await translate(text,tgt);elTop.textContent=out;}else if(who==='en'||who==='ja'){const out=await translate(text,'zh');elBottom.textContent=out;}else{elBottom.textContent=text;}}catch(err){console.warn(err);}if(running)safeStartSlice();};running=true;elStart.textContent='停止';elStart.classList.add('stop');elDot.classList.add('on');elSt.textContent='Listening…';safeStartSlice();}
+async function start(){const s=store.get();if(!s.key){openSettings();alert('請先輸入 API Key');return;}try{media=await navigator.mediaDevices.getUserMedia({audio:true});}catch(err){alert('無法使用麥克風');return;}try{recorder=new MediaRecorder(media,{mimeType:'audio/webm'});}catch{recorder=new MediaRecorder(media);}chunks=[];recorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};recorder.onstop=async()=>{if(chunks.length===0)return;const blob=new Blob(chunks,{type:chunks[0].type||'audio/webm'});chunks=[];try{const text=await transcribe(blob);if(!text)return;let who=detectLang(text);const tgt=elTarget.value;if(who==='zh'||who==='zh-en'||who==='zh-ja'){
+        const out=await translate(text,tgt);
+        appendMsg(elTopLog, out, 'you');
+      }else if(who==='en'||who==='ja'){
+        const out=await translate(text,'zh');
+        appendMsg(elBottomLog, out, 'them');
+      }else{
+        appendMsg(elBottomLog, text, 'them');
+      }}catch(err){console.warn(err);}if(running)safeStartSlice();};running=true;elStart.textContent='停止';elStart.classList.add('stop');elDot.classList.add('on');elSt.textContent='Listening…';safeStartSlice();}
 
 function safeStartSlice(){const s=store.get();const sec=Math.max(2,Math.min(10,Number(s.chunkSec)||4));try{recorder.start();}catch{}clearTimeout(chunkTimer);chunkTimer=setTimeout(()=>{try{recorder.stop();}catch{}},sec*1000);}
 
@@ -166,7 +176,14 @@ btnClose.addEventListener('click',closeSettings);
 btnSave.addEventListener('click',()=>{store.save();closeSettings();});
 function openSettings(){mdl.classList.add('open');}
 function closeSettings(){mdl.classList.remove('open');}
+function appendMsg(logEl, text, who){
+  const div = document.createElement('div');
+  div.className = 'bubble msg ' + (who||'');
+  div.textContent = text;
+  logEl.appendChild(div);
+  while (logEl.children.length > 100) logEl.removeChild(logEl.firstChild);
+  logEl.scrollTop = logEl.scrollHeight;
+}
 </script>
 </body>
 </html>
-
