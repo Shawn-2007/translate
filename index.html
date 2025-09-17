@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>雙向語音翻譯 MVP · iOS 版</title>
+  <title>雙向語音翻譯 MVP · iOS 友善（timeslice 佇列併發版）</title>
   <style>
     :root{--bg:#0b0f14;--fg:#e6e8ea;--card:#111827;--muted:#6b7280;--line:#1f2937;--ok:#10b981;--bad:#ef4444;--btn:#10b981;--btn2:#374151}
     *{box-sizing:border-box}
     body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Noto Sans,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg)}
-    .app{display:flex;flex-direction:column;min-height:100vh}
+    .app{display:flex;flex-direction:column;min-height:100dvh}
     header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line)}
     .title{font-weight:700}
     .icons{display:flex;gap:8px}
@@ -23,7 +23,7 @@
     main{display:flex;flex-direction:column;gap:0;flex:1}
     .pane{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px}
     .pane.top{border-bottom:1px solid var(--line);transform:rotate(180deg)}
-    .bubble{width:100%;max-width:760px;min-height:112px;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px;line-height:1.6;font-size:18px}
+    .bubble{width:100%;max-width:760px;min-height:112px;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px;line-height:1.6;font-size:18px;position:relative}
     .toolbar{display:flex;gap:12px;align-items:center;justify-content:center;border-top:1px solid var(--line);padding:12px;background:var(--bg)}
     select,input{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
     label{font-size:13px;color:var(--muted)}
@@ -38,12 +38,15 @@
     .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
     .danger{color:#fecaca}
     .small{font-size:12px;color:var(--muted)}
+    /* lite toast */
+    .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#111827;border:1px solid #374151;color:#e5e7eb;border-radius:10px;padding:10px 14px;font-size:13px;display:none}
+    .toast.show{display:block}
   </style>
 </head>
 <body>
 <div class="app">
   <header>
-    <div class="title">雙向語音翻譯 MVP · iOS 友善</div>
+    <div class="title">雙向語音翻譯 MVP · iOS 友善（不中斷錄音 v2）</div>
     <div class="icons row">
       <span class="status"><span class="dot" id="dot"></span><span id="st">Idle</span></span>
       <button class="btn secondary" id="btnSettings">設定</button>
@@ -68,32 +71,40 @@
         <option value="ja">日文 (ja)</option>
       </select>
     </div>
+    <div class="row">
+      <label>同時上傳數</label>
+      <select id="concurrency">
+        <option value="1">1</option>
+        <option value="2" selected>2</option>
+        <option value="3">3</option>
+      </select>
+    </div>
   </div>
 </div>
 
 <!-- 設定 Modal -->
-<div class="modal" id="mdl">
-  <div class="sheet">
+<div class="modal" id="mdl" aria-hidden="true">
+  <div class="sheet" role="dialog" aria-modal="true" aria-label="設定">
     <header class="row" style="justify-content:space-between">
       <div style="font-weight:700">設定</div>
       <button class="btn secondary" id="btnClose">關閉</button>
     </header>
     <div class="content">
       <div class="grid">
-        <label>OpenAI API Key（只儲存在本機）</label>
+        <label for="apiKey">OpenAI API Key（只儲存在本機）</label>
         <input id="apiKey" placeholder="sk-..." />
         <div class="hint">不會上傳到我們的伺服器。<span class="danger">注意：前端儲存仍有風險，請自行評估。</span></div>
       </div>
       <div class="row2">
         <div class="grid">
-          <label>轉寫（ASR）模型</label>
+          <label for="asrModel">轉寫（ASR）模型</label>
           <select id="asrModel">
             <option value="whisper-1">whisper-1</option>
             <option value="gpt-4o-mini-transcribe">gpt-4o-mini-transcribe</option>
           </select>
         </div>
         <div class="grid">
-          <label>翻譯模型</label>
+          <label for="mtModel">翻譯模型</label>
           <select id="mtModel">
             <option value="gpt-4o-mini">gpt-4o-mini</option>
             <option value="gpt-4o">gpt-4o</option>
@@ -102,11 +113,11 @@
       </div>
       <div class="row2">
         <div class="grid">
-          <label>音訊切片長度（秒）</label>
+          <label for="chunkSec">音訊切片長度（秒）</label>
           <input id="chunkSec" type="number" min="2" max="10" value="4" />
         </div>
         <div class="grid">
-          <label>自動朗讀（TTS）</label>
+          <label for="autoTTS">自動朗讀（TTS）</label>
           <select id="autoTTS">
             <option value="on">開啟</option>
             <option value="off">關閉</option>
@@ -120,50 +131,240 @@
   </div>
 </div>
 
+<div class="toast" id="toast"></div>
+
 <script>
-const elTop=document.getElementById('topText');
-const elBottom=document.getElementById('bottomText');
-const elTarget=document.getElementById('target');
-const elStart=document.getElementById('btnStart');
-const elDot=document.getElementById('dot');
-const elSt=document.getElementById('st');
-const mdl=document.getElementById('mdl');
-const btnSettings=document.getElementById('btnSettings');
-const btnClose=document.getElementById('btnClose');
-const btnSave=document.getElementById('btnSave');
-const inKey=document.getElementById('apiKey');
-const inASR=document.getElementById('asrModel');
-const inMT=document.getElementById('mtModel');
-const inChunk=document.getElementById('chunkSec');
-const inAutoTTS=document.getElementById('autoTTS');
+// ====== 元件引用 ======
+const elTop = document.getElementById('topText');
+const elBottom = document.getElementById('bottomText');
+const elTarget = document.getElementById('target');
+const elStart = document.getElementById('btnStart');
+const elDot = document.getElementById('dot');
+const elSt = document.getElementById('st');
+const mdl = document.getElementById('mdl');
+const btnSettings = document.getElementById('btnSettings');
+const btnClose = document.getElementById('btnClose');
+const btnSave = document.getElementById('btnSave');
+const inKey = document.getElementById('apiKey');
+const inASR = document.getElementById('asrModel');
+const inMT = document.getElementById('mtModel');
+const inChunk = document.getElementById('chunkSec');
+const inAutoTTS = document.getElementById('autoTTS');
+const inConcurrency = document.getElementById('concurrency');
+const toast = document.getElementById('toast');
 
-let running=false;let media,recorder,chunks=[];let chunkTimer;
+// ====== 簡易 toast ======
+function showToast(msg, ms=2200){
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), ms);
+}
 
-const store={
-  load(){const s=JSON.parse(localStorage.getItem('bx-translator')||'{}');inKey.value=s.key||'';inASR.value=s.asr||'whisper-1';inMT.value=s.mt||'gpt-4o-mini';inChunk.value=s.chunkSec||4;inAutoTTS.value=(s.autoTTS??'on');elTarget.value=s.target||'en';},
-  save(){const s={key:inKey.value.trim(),asr:inASR.value,mt:inMT.value,chunkSec:Number(inChunk.value)||4,autoTTS:inAutoTTS.value,target:elTarget.value};localStorage.setItem('bx-translator',JSON.stringify(s));return s;},
-  get(){return JSON.parse(localStorage.getItem('bx-translator')||'{}');}
+// ====== 設定儲存 ======
+const store = {
+  load(){
+    const s = JSON.parse(localStorage.getItem('bx-translator')||'{}');
+    inKey.value = s.key || '';
+    inASR.value = s.asr || 'whisper-1';
+    inMT.value = s.mt || 'gpt-4o-mini';
+    inChunk.value = s.chunkSec || 4;
+    inAutoTTS.value = (s.autoTTS ?? 'on');
+    elTarget.value = s.target || 'en';
+    inConcurrency.value = s.cc || '2';
+  },
+  save(){
+    const s = {
+      key: inKey.value.trim(),
+      asr: inASR.value,
+      mt: inMT.value,
+      chunkSec: Math.max(2, Math.min(10, Number(inChunk.value)||4)),
+      autoTTS: inAutoTTS.value,
+      target: elTarget.value,
+      cc: inConcurrency.value
+    };
+    localStorage.setItem('bx-translator', JSON.stringify(s));
+    return s;
+  },
+  get(){ return JSON.parse(localStorage.getItem('bx-translator')||'{}'); }
 };
 store.load();
 
-function detectLang(text){const hasKana=/[\u3040-\u309F\u30A0-\u30FF]/.test(text);const cjk=text.match(/[\u4E00-\u9FFF]/g)?.length??0;const latin=text.match(/[A-Za-z]/g)?.length??0;if(hasKana)return'ja';if(cjk>latin*1.2)return'zh';if(latin>0)return'en';return'unknown';}
+// ====== 語言工具 ======
+const LANG_NAME = { en: 'English', ja: 'Japanese', zh: 'Traditional Chinese' };
+function detectLang(text){
+  const hasKana = /[\u3040-\u309F\u30A0-\u30FF]/.test(text);
+  const cjk = text.match(/[\u4E00-\u9FFF]/g)?.length ?? 0;
+  const latin = text.match(/[A-Za-z]/g)?.length ?? 0;
+  if (hasKana) return 'ja';
+  if (cjk > latin * 1.2) return 'zh';
+  if (latin > 0) return 'en';
+  return 'unknown';
+}
 
-async function transcribe(blob){const s=store.get();if(!s.key)throw new Error('缺少 API Key');const fd=new FormData();fd.append('file',blob,'chunk.webm');fd.append('model',s.asr||'whisper-1');const r=await fetch('https://api.openai.com/v1/audio/transcriptions',{method:'POST',headers:{'Authorization':`Bearer ${s.key}`},body:fd});if(!r.ok){throw new Error('ASR 失敗');}const j=await r.json();return j.text?.trim()||'';}
+// ====== 呼叫後端 API ======
+async function transcribe(blob){
+  const s = store.get();
+  if (!s.key) throw new Error('缺少 API Key');
+  const fd = new FormData();
+  fd.append('file', blob, 'chunk.' + (blob.type.includes('mp4') ? 'mp4' : 'webm'));
+  fd.append('model', s.asr || 'whisper-1');
+  const r = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${s.key}` },
+    body: fd
+  });
+  if (!r.ok){
+    const t = await r.text().catch(()=> '');
+    throw new Error('ASR 失敗: ' + r.status + ' ' + t);
+  }
+  const j = await r.json();
+  return j.text?.trim() || '';
+}
 
-async function translate(text,target){const s=store.get();if(!s.key)throw new Error('缺少 API Key');const sys=`Translate into ${target==='zh'?'Traditional Chinese':target}.`;const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${s.key}`},body:JSON.stringify({model:s.mt||'gpt-4o-mini',input:[{role:'system',content:sys},{role:'user',content:text}]})});if(!r.ok){throw new Error('翻譯失敗');}const j=await r.json();const out=j.output?.[0]?.content?.[0]?.text||j.output_text||'';return out.trim();}
+async function translate(text, target){
+  const s = store.get();
+  if (!s.key) throw new Error('缺少 API Key');
+  const sys = `Translate the text into ${LANG_NAME[target] || target}. Return only the translation.`;
+  const r = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${s.key}` },
+    body: JSON.stringify({
+      model: s.mt || 'gpt-4o-mini',
+      input: [
+        { role: 'system', content: sys },
+        { role: 'user', content: text }
+      ]
+    })
+  });
+  if (!r.ok){
+    const t = await r.text().catch(()=> '');
+    throw new Error('翻譯失敗: ' + r.status + ' ' + t);
+  }
+  const j = await r.json();
+  const out = j.output_text || j.output?.[0]?.content?.[0]?.text || '';
+  return out.trim();
+}
 
-async function start(){const s=store.get();if(!s.key){openSettings();alert('請先輸入 API Key');return;}try{media=await navigator.mediaDevices.getUserMedia({audio:true});}catch(err){alert('無法使用麥克風');return;}try{recorder=new MediaRecorder(media,{mimeType:'audio/webm'});}catch{recorder=new MediaRecorder(media);}chunks=[];recorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};recorder.onstop=async()=>{if(chunks.length===0)return;const blob=new Blob(chunks,{type:chunks[0].type||'audio/webm'});chunks=[];try{const text=await transcribe(blob);if(!text)return;const who=detectLang(text);const tgt=elTarget.value;if(who==='zh'){const out=await translate(text,tgt);elTop.textContent=out;if(store.get().autoTTS==='on'){/*可選擇性 TTS*/}}else if(who==='en'||who==='ja'){const out=await translate(text,'zh');elBottom.textContent=out;if(store.get().autoTTS==='on'){/*可選擇性 TTS*/}}else{elBottom.textContent=text;}}catch(err){console.warn(err);}if(running)safeStartSlice();};running=true;elStart.textContent='停止';elStart.classList.add('stop');elDot.classList.add('on');elSt.textContent='Listening…';safeStartSlice();}
+// ====== 錄音：timeslice + 佇列 + 併發節流 ======
+let running = false;
+let media, recorder;
+const queue = [];
+let inflight = 0;
 
-function safeStartSlice(){const s=store.get();const sec=Math.max(2,Math.min(10,Number(s.chunkSec)||4));try{recorder.start();}catch{}clearTimeout(chunkTimer);chunkTimer=setTimeout(()=>{try{recorder.stop();}catch{}},sec*1000);}
+function pickMime(){
+  const prefers = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
+  return prefers.find(t => (window.MediaRecorder && MediaRecorder.isTypeSupported?.(t)));
+}
 
-function stop(){running=false;clearTimeout(chunkTimer);try{recorder?.stop();}catch{}try{media?.getTracks()?.forEach(t=>t.stop());}catch{}elStart.textContent='啟動';elStart.classList.remove('stop');elDot.classList.remove('on');elSt.textContent='Idle';}
+async function start(){
+  const s = store.get();
+  if (!s.key){ openSettings(); showToast('請先輸入 API Key'); return; }
 
-elStart.addEventListener('click',()=>running?stop():start());
-btnSettings.addEventListener('click',openSettings);
-btnClose.addEventListener('click',closeSettings);
-btnSave.addEventListener('click',()=>{store.save();closeSettings();});
-function openSettings(){mdl.classList.add('open');}
-function closeSettings(){mdl.classList.remove('open');}
+  try{
+    media = await navigator.mediaDevices.getUserMedia({ audio: true });
+  }catch(err){
+    showToast('無法使用麥克風');
+    return;
+  }
+
+  try{
+    const mimeType = pickMime();
+    recorder = mimeType ? new MediaRecorder(media, { mimeType }) : new MediaRecorder(media);
+  }catch(err){
+    showToast('建立錄音器失敗');
+    return;
+  }
+
+  recorder.ondataavailable = (e) => {
+    if (e.data && e.data.size){
+      queue.push(e.data);
+      pump();
+    }
+  };
+
+  const sec = Math.max(2, Math.min(10, Number(s.chunkSec)||4));
+  try{
+    recorder.start(sec * 1000); // ★不中斷錄音：固定時間吐片段
+  }catch(err){
+    showToast('開始錄音失敗');
+    return;
+  }
+
+  running = true;
+  elStart.textContent = '停止';
+  elStart.classList.add('stop');
+  elDot.classList.add('on');
+  elSt.textContent = 'Listening…';
+}
+
+async function pump(){
+  // 允許在停止後把佇列處理完：把 running 檢查拿掉即可；
+  // 若希望停止就丟棄排隊，改回 if (!running) return;
+  const s = store.get();
+  const MAX_PARALLEL = Math.max(1, Math.min(3, Number(s.cc)||2));
+  if (inflight >= MAX_PARALLEL || queue.length === 0) return;
+
+  inflight++;
+  const blob = queue.shift();
+  try{
+    const text = await transcribe(blob);
+    if (!text){
+      return;
+    }
+    const who = detectLang(text);
+    const tgt = elTarget.value; // 'en' 或 'ja'
+    if (who === 'zh'){
+      const out = await translate(text, tgt);
+      if (out) elTop.textContent = out;
+      // if (store.get().autoTTS === 'on') { /* 可在此觸發 TTS */ }
+    }else if (who === 'en' || who === 'ja'){
+      const out = await translate(text, 'zh');
+      if (out) elBottom.textContent = out;
+      // if (store.get().autoTTS === 'on') { /* 可在此觸發 TTS */ }
+    }else{
+      elBottom.textContent = text;
+    }
+  }catch(err){
+    console.warn(err);
+    showToast(err.message || '上傳/翻譯失敗');
+  }finally{
+    inflight--;
+    // 盡量持續抽取
+    if (queue.length > 0) pump();
+  }
+}
+
+function stop(){
+  running = false;
+  try{ recorder?.stop(); }catch{}
+  try{ media?.getTracks()?.forEach(t => t.stop()); }catch{}
+  elStart.textContent = '啟動';
+  elStart.classList.remove('stop');
+  elDot.classList.remove('on');
+  elSt.textContent = 'Idle';
+  // ★ 若想在停止後繼續把尚未處理完的 queue 消化，呼叫一次 pump()
+  if (queue.length) pump();
+}
+
+// ====== 事件繫結 ======
+elStart.addEventListener('click', () => running ? stop() : start());
+btnSettings.addEventListener('click', openSettings);
+btnClose.addEventListener('click', closeSettings);
+btnSave.addEventListener('click', () => { store.save(); closeSettings(); showToast('已儲存設定'); });
+
+function openSettings(){ mdl.classList.add('open'); mdl.setAttribute('aria-hidden','false'); }
+function closeSettings(){ mdl.classList.remove('open'); mdl.setAttribute('aria-hidden','true'); }
+
+// 能見度變更：退到背景時停止錄音，回來再手動啟動
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && running) {
+    stop();
+  }
+});
+
+window.addEventListener('beforeunload', () => {
+  try{ media?.getTracks()?.forEach(t => t.stop()); }catch{}
+});
 </script>
 </body>
 </html>
